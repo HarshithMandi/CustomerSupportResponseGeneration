@@ -1,0 +1,22 @@
+[
+  {
+    "title": "Refund Policy",
+    "content": "Customers can request a refund within 7 days of delivery for eligible items. The item must be unused and in original packaging. Refunds are processed to the original payment method after inspection. Certain categories (e.g., perishable goods) are non-refundable."
+  },
+  {
+    "title": "Return & Replacement Policy",
+    "content": "Returns or replacements can be requested within 7 days of delivery if the product is damaged, defective, or incorrect. For damaged/defective items, customers should share photos/video evidence. A pickup may be scheduled where available."
+  },
+  {
+    "title": "Delivery Delay Policy",
+    "content": "If delivery is delayed beyond 5 business days from the promised date, customers may cancel the order before delivery for a full refund. If the order is already delivered late, we can offer a goodwill coupon as per support discretion."
+  },
+  {
+    "title": "Order Cancellation Policy",
+    "content": "Orders can be cancelled before they are shipped for a full refund. If an order has shipped, cancellation is not guaranteed and the customer should follow the return process after delivery."
+  },
+  {
+    "title": "Warranty Policy",
+    "content": "Warranty coverage depends on the brand and product category. If a product is within warranty and develops a fault, the customer should be guided to the brand service center or the company’s warranty process as applicable." 
+  }
+]
