@@ -8,10 +8,42 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .bm25_retriever import BM25PolicyIndex
-from .logging_utils import log_event, setup_logger
-from .prompts import build_prompt, fallback_response
-from .sarvam_client import SarvamLLM, strip_think_tags
+try:
+    from .bm25_retriever import BM25PolicyIndex
+    from .logging_utils import log_event, setup_logger
+    from .prompts import build_prompt, fallback_response
+    from .sarvam_client import SarvamLLM, strip_think_tags
+except ImportError:
+    from bm25_retriever import BM25PolicyIndex
+    from logging_utils import log_event, setup_logger
+    from prompts import build_prompt, fallback_response
+    from sarvam_client import SarvamLLM, strip_think_tags
+
+
+def _load_env_file() -> None:
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            continue
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+_load_env_file()
 
 
 DATA_PATH = os.getenv("POLICY_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "policies.json")
@@ -168,9 +200,9 @@ def generate(req: GenerateRequest) -> Any:
     temperature = req.temperature if req.temperature is not None else default_temp
     max_tokens = req.max_tokens if req.max_tokens is not None else default_max_tokens
 
-    api_key = os.getenv("SARVAM_API_SUBSCRIPTION_KEY")
+    api_key = os.getenv("SARVAM_APIKEY") or os.getenv("SARVAM_API_SUBSCRIPTION_KEY")
     if not api_key:
-        raise RuntimeError("Missing environment variable SARVAM_API_SUBSCRIPTION_KEY")
+        raise RuntimeError("Missing environment variable SARVAM_APIKEY")
 
     llm = SarvamLLM(api_subscription_key=api_key)
     resp_text = llm.generate(prompt=prompt, temperature=temperature, max_tokens=max_tokens)
