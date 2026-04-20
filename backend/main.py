@@ -4,19 +4,33 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .bm25_retriever import BM25PolicyIndex
 from .logging_utils import log_event, setup_logger
 from .prompts import build_prompt, fallback_response
 from .sarvam_client import SarvamLLM, strip_think_tags
+from .vector_retriever import ChromaPolicyIndex
+
+
+# Load environment variables from the repo root .env (useful for local dev).
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DOTENV_PATH = _REPO_ROOT / ".env"
+if _DOTENV_PATH.exists():
+    load_dotenv(_DOTENV_PATH)
 
 
 DATA_PATH = os.getenv("POLICY_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "policies.json")
 XLSX_PATH = os.getenv("XLSX_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "Complaint Dataset.xlsx")
-BM25_MIN_SCORE = float(os.getenv("BM25_MIN_SCORE") or "0.5")
+
+# Embedding similarity threshold for fallback.
+# Back-compat: if BM25_MIN_SCORE was set in env, we reuse it as RAG_MIN_SCORE.
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE") or os.getenv("BM25_MIN_SCORE") or "0.25")
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR") or os.path.join(os.path.dirname(__file__), "chroma_db")
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME") or "all-MiniLM-L6-v2"
 
 logger = setup_logger(os.path.join(os.path.dirname(__file__), "logs"))
 
@@ -25,8 +39,23 @@ if Path(XLSX_PATH).exists():
     xlsx_file = XLSX_PATH
 
 # Build separate indexes so we can reliably include *policies* as well as the XLSX dataset.
-policy_index = BM25PolicyIndex.from_json_file(DATA_PATH)
-playbook_index = BM25PolicyIndex.from_sources(json_path=None, xlsx_path=xlsx_file)
+policy_index = ChromaPolicyIndex.from_sources(
+    collection_name="policy_docs",
+    persist_dir=CHROMA_PERSIST_DIR,
+    source_label="POLICY",
+    embedding_model_name=EMBEDDING_MODEL_NAME,
+    json_path=DATA_PATH,
+    xlsx_path=None,
+)
+
+playbook_index = ChromaPolicyIndex.from_sources(
+    collection_name="playbook_docs",
+    persist_dir=CHROMA_PERSIST_DIR,
+    source_label="DATASET",
+    embedding_model_name=EMBEDDING_MODEL_NAME,
+    json_path=None,
+    xlsx_path=xlsx_file,
+)
 
 app = FastAPI(title="AI-CSRG Backend", version="1.0")
 
@@ -73,14 +102,9 @@ def health() -> dict[str, str]:
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest) -> Any:
-    policy_docs = policy_index.search(req.query, top_k=3)
-    playbook_docs = playbook_index.search(req.query, top_k=3)
-
-    policy_top = policy_docs[0].score if policy_docs else 0.0
-    playbook_top = playbook_docs[0].score if playbook_docs else 0.0
-    best_score = max(policy_top, playbook_top)
-
-    if (not policy_docs and not playbook_docs) or best_score < BM25_MIN_SCORE:
+    # Ensure the endpoint never hard-fails with an uncaught exception.
+    # Unhandled 500 responses can miss CORS headers (browser reports as "Failed to fetch").
+    def _fallback(*, reason: str, best_score: float, policy_top: float, playbook_top: float) -> GenerateResponse:
         resp_text = fallback_response()
         log_event(
             logger,
@@ -89,9 +113,12 @@ def generate(req: GenerateRequest) -> Any:
                 "query": req.query,
                 "mode": req.mode,
                 "fallback": True,
-                "bm25_top_score": best_score,
-                "bm25_policy_top_score": policy_top,
-                "bm25_playbook_top_score": playbook_top,
+                "fallback_reason": reason,
+                "rag_top_score": best_score,
+                "rag_policy_top_score": policy_top,
+                "rag_playbook_top_score": playbook_top,
+                "rag_min_score": RAG_MIN_SCORE,
+                "embedding_model": EMBEDDING_MODEL_NAME,
                 "retrieved_docs": [],
                 "temperature": None,
                 "max_tokens": None,
@@ -105,6 +132,21 @@ def generate(req: GenerateRequest) -> Any:
             used_temperature=0.0,
             used_max_tokens=0,
             fallback=True,
+        )
+
+    policy_docs = policy_index.search(req.query, top_k=3)
+    playbook_docs = playbook_index.search(req.query, top_k=3)
+
+    policy_top = policy_docs[0].score if policy_docs else 0.0
+    playbook_top = playbook_docs[0].score if playbook_docs else 0.0
+    best_score = max(policy_top, playbook_top)
+
+    if (not policy_docs and not playbook_docs) or best_score < RAG_MIN_SCORE:
+        return _fallback(
+            reason="no_relevant_docs",
+            best_score=best_score,
+            policy_top=policy_top,
+            playbook_top=playbook_top,
         )
 
     # Minimize LLM tokens: select up to 3 docs total and compact/truncate content.
@@ -170,10 +212,23 @@ def generate(req: GenerateRequest) -> Any:
 
     api_key = os.getenv("SARVAM_API_SUBSCRIPTION_KEY")
     if not api_key:
-        raise RuntimeError("Missing environment variable SARVAM_API_SUBSCRIPTION_KEY")
+        return _fallback(
+            reason="missing_sarvam_api_key",
+            best_score=best_score,
+            policy_top=policy_top,
+            playbook_top=playbook_top,
+        )
 
     llm = SarvamLLM(api_subscription_key=api_key)
-    resp_text = llm.generate(prompt=prompt, temperature=temperature, max_tokens=max_tokens)
+    try:
+        resp_text = llm.generate(prompt=prompt, temperature=temperature, max_tokens=max_tokens)
+    except Exception:
+        return _fallback(
+            reason="sarvam_generation_error",
+            best_score=best_score,
+            policy_top=policy_top,
+            playbook_top=playbook_top,
+        )
     # Defense-in-depth: ensure frontend never receives internal thought content.
     resp_text = strip_think_tags(resp_text)
 
@@ -186,9 +241,11 @@ def generate(req: GenerateRequest) -> Any:
             "query": req.query,
             "mode": req.mode,
             "fallback": False,
-            "bm25_top_score": best_score,
-            "bm25_policy_top_score": policy_top,
-            "bm25_playbook_top_score": playbook_top,
+            "rag_top_score": best_score,
+            "rag_policy_top_score": policy_top,
+            "rag_playbook_top_score": playbook_top,
+            "rag_min_score": RAG_MIN_SCORE,
+            "embedding_model": EMBEDDING_MODEL_NAME,
             "retrieved_docs": [d.model_dump() for d in retrieved_out],
             "prompt_name": prompt_name,
             "temperature": temperature,

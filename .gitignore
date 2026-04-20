@@ -1,0 +1,8 @@
+# Environment variables
+.env
+
+# ChromaDB persistence directories
+backend/chroma_db/
+backend/chroma_db*/
+**/chroma_db/
+**/chroma_db*/

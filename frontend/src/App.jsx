@@ -87,7 +87,7 @@ export default function App() {
         <header className="header">
           <div>
             <h1 className="title">AI Support Response Generator</h1>
-            <p className="subtitle">BM25 policy retrieval + Sarvam AI</p>
+            <p className="subtitle">Embeddings retrieval (ChromaDB) + Sarvam AI</p>
           </div>
         </header>
 
@@ -183,7 +183,7 @@ export default function App() {
           </div>
 
           <div className="panel">
-            <h2 className="h2">Retrieved policy documents (BM25)</h2>
+            <h2 className="h2">Retrieved policy documents (Embeddings)</h2>
             <div className="docs">
               {result?.retrieved_docs?.length ? (
                 result.retrieved_docs.map((d, idx) => (
