@@ -5,15 +5,22 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .logging_utils import log_event, setup_logger
-from .prompts import build_prompt, fallback_response
-from .sarvam_client import SarvamLLM, strip_think_tags
-from .vector_retriever import ChromaPolicyIndex
+try:
+    # Preferred when running as a package: `uvicorn backend_pinecone.main:app`
+    from .logging_utils import log_event, setup_logger
+    from .pinecone_retriever import PineconePolicyIndex
+    from .prompts import build_prompt, fallback_response
+    from .sarvam_client import SarvamLLM, strip_think_tags
+except ImportError:
+    # Allow running from inside the folder: `uvicorn main:app`
+    from logging_utils import log_event, setup_logger
+    from pinecone_retriever import PineconePolicyIndex
+    from prompts import build_prompt, fallback_response
+    from sarvam_client import SarvamLLM, strip_think_tags
 
 
 # Load environment variables from the repo root .env (useful for local dev).
@@ -22,42 +29,78 @@ _DOTENV_PATH = _REPO_ROOT / ".env"
 if _DOTENV_PATH.exists():
     load_dotenv(_DOTENV_PATH)
 
+# Source data comes from the existing backend/data folder by default.
+DATA_PATH = os.getenv("POLICY_DATA_PATH") or str(_REPO_ROOT / "backend" / "data" / "policies.json")
+XLSX_PATH = os.getenv("XLSX_DATA_PATH") or str(_REPO_ROOT / "backend" / "data" / "Complaint Dataset.xlsx")
 
-DATA_PATH = os.getenv("POLICY_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "policies.json")
-XLSX_PATH = os.getenv("XLSX_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "Complaint Dataset.xlsx")
+# Pinecone configuration.
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or ""
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME") or ""
+PINECONE_HOST = os.getenv("PINECONE_HOST")  # optional
+PINECONE_NAMESPACE_POLICY = os.getenv("PINECONE_NAMESPACE_POLICY") or "policy"
+PINECONE_NAMESPACE_DATASET = os.getenv("PINECONE_NAMESPACE_DATASET") or "dataset"
 
-# Embedding similarity threshold for fallback.
-# Back-compat: if BM25_MIN_SCORE was set in env, we reuse it as RAG_MIN_SCORE.
-RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE") or os.getenv("BM25_MIN_SCORE") or "0.25")
-CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR") or os.path.join(os.path.dirname(__file__), "chroma_db")
+# Embedding model (local).
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME") or "all-MiniLM-L6-v2"
 
-logger = setup_logger(os.path.join(os.path.dirname(__file__), "logs"))
+# Similarity threshold for fallback.
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE") or os.getenv("BM25_MIN_SCORE") or "0.25")
+
+logger = setup_logger(Path(__file__).with_name("logs"))
 
 xlsx_file: str | None = None
 if Path(XLSX_PATH).exists():
     xlsx_file = XLSX_PATH
 
-# Build separate indexes so we can reliably include *policies* as well as the XLSX dataset.
-policy_index = ChromaPolicyIndex.from_sources(
-    collection_name="policy_docs",
-    persist_dir=CHROMA_PERSIST_DIR,
-    source_label="POLICY",
-    embedding_model_name=EMBEDDING_MODEL_NAME,
-    json_path=DATA_PATH,
-    xlsx_path=None,
-)
 
-playbook_index = ChromaPolicyIndex.from_sources(
-    collection_name="playbook_docs",
-    persist_dir=CHROMA_PERSIST_DIR,
-    source_label="DATASET",
-    embedding_model_name=EMBEDDING_MODEL_NAME,
-    json_path=None,
-    xlsx_path=xlsx_file,
-)
+def _missing_pinecone_config() -> bool:
+    return not (PINECONE_API_KEY and PINECONE_INDEX_NAME)
 
-app = FastAPI(title="AI-CSRG Backend", version="1.0")
+
+# Build separate retrievers so we can reliably include *policies* as well as the XLSX dataset.
+policy_index: PineconePolicyIndex | None = None
+playbook_index: PineconePolicyIndex | None = None
+
+if not _missing_pinecone_config():
+    try:
+        policy_index = PineconePolicyIndex.from_sources(
+            api_key=PINECONE_API_KEY,
+            index_name=PINECONE_INDEX_NAME,
+            host=PINECONE_HOST,
+            namespace=PINECONE_NAMESPACE_POLICY,
+            source_label="POLICY",
+            embedding_model_name=EMBEDDING_MODEL_NAME,
+            json_path=DATA_PATH,
+            xlsx_path=None,
+        )
+
+        playbook_index = PineconePolicyIndex.from_sources(
+            api_key=PINECONE_API_KEY,
+            index_name=PINECONE_INDEX_NAME,
+            host=PINECONE_HOST,
+            namespace=PINECONE_NAMESPACE_DATASET,
+            source_label="DATASET",
+            embedding_model_name=EMBEDDING_MODEL_NAME,
+            json_path=None,
+            xlsx_path=xlsx_file,
+        )
+    except Exception as e:
+        # Keep the server running so the frontend gets a deterministic fallback
+        # instead of a connection error.
+        log_event(
+            logger,
+            "pinecone_init_error",
+            {
+                "error": str(e),
+                "pinecone_index": PINECONE_INDEX_NAME,
+                "pinecone_host": bool(PINECONE_HOST),
+            },
+        )
+        policy_index = None
+        playbook_index = None
+
+
+app = FastAPI(title="AI-CSRG Backend (Pinecone)", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -102,8 +145,6 @@ def health() -> dict[str, str]:
 
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest) -> Any:
-    # Ensure the endpoint never hard-fails with an uncaught exception.
-    # Unhandled 500 responses can miss CORS headers (browser reports as "Failed to fetch").
     def _fallback(*, reason: str, best_score: float, policy_top: float, playbook_top: float) -> GenerateResponse:
         resp_text = fallback_response()
         log_event(
@@ -119,6 +160,10 @@ def generate(req: GenerateRequest) -> Any:
                 "rag_playbook_top_score": playbook_top,
                 "rag_min_score": RAG_MIN_SCORE,
                 "embedding_model": EMBEDDING_MODEL_NAME,
+                "vector_db": "pinecone",
+                "pinecone_index": PINECONE_INDEX_NAME,
+                "pinecone_namespace_policy": PINECONE_NAMESPACE_POLICY,
+                "pinecone_namespace_dataset": PINECONE_NAMESPACE_DATASET,
                 "retrieved_docs": [],
                 "temperature": None,
                 "max_tokens": None,
@@ -134,8 +179,19 @@ def generate(req: GenerateRequest) -> Any:
             fallback=True,
         )
 
-    policy_docs = policy_index.search(req.query, top_k=3)
-    playbook_docs = playbook_index.search(req.query, top_k=3)
+    if _missing_pinecone_config() or policy_index is None or playbook_index is None:
+        return _fallback(reason="missing_pinecone_config", best_score=0.0, policy_top=0.0, playbook_top=0.0)
+
+    try:
+        policy_docs = policy_index.search(req.query, top_k=3)
+        playbook_docs = playbook_index.search(req.query, top_k=3)
+    except Exception:
+        return _fallback(
+            reason="pinecone_query_error",
+            best_score=0.0,
+            policy_top=0.0,
+            playbook_top=0.0,
+        )
 
     policy_top = policy_docs[0].score if policy_docs else 0.0
     playbook_top = playbook_docs[0].score if playbook_docs else 0.0
@@ -149,7 +205,6 @@ def generate(req: GenerateRequest) -> Any:
             playbook_top=playbook_top,
         )
 
-    # Minimize LLM tokens: select up to 3 docs total and compact/truncate content.
     selected: list[tuple[str, Any]] = []
 
     if policy_docs and playbook_docs:
@@ -233,7 +288,7 @@ def generate(req: GenerateRequest) -> Any:
             policy_top=policy_top,
             playbook_top=playbook_top,
         )
-    # Defense-in-depth: ensure frontend never receives internal thought content.
+
     resp_text = strip_think_tags(resp_text)
 
     retrieved_out = formatted_docs
@@ -250,11 +305,12 @@ def generate(req: GenerateRequest) -> Any:
             "rag_playbook_top_score": playbook_top,
             "rag_min_score": RAG_MIN_SCORE,
             "embedding_model": EMBEDDING_MODEL_NAME,
+            "vector_db": "pinecone",
+            "pinecone_index": PINECONE_INDEX_NAME,
             "retrieved_docs": [d.model_dump() for d in retrieved_out],
             "prompt_name": prompt_name,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "prompt": prompt,
         },
     )
 
