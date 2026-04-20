@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+<<<<<<< HEAD
 from .logging_utils import log_event, setup_logger
 from .prompts import build_prompt, fallback_response
 from .sarvam_client import SarvamLLM, strip_think_tags
@@ -21,6 +22,44 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DOTENV_PATH = _REPO_ROOT / ".env"
 if _DOTENV_PATH.exists():
     load_dotenv(_DOTENV_PATH)
+=======
+try:
+    from .bm25_retriever import BM25PolicyIndex
+    from .logging_utils import log_event, setup_logger
+    from .prompts import build_prompt, fallback_response
+    from .sarvam_client import SarvamLLM, strip_think_tags
+except ImportError:
+    from bm25_retriever import BM25PolicyIndex
+    from logging_utils import log_event, setup_logger
+    from prompts import build_prompt, fallback_response
+    from sarvam_client import SarvamLLM, strip_think_tags
+
+
+def _load_env_file() -> None:
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            continue
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+_load_env_file()
+>>>>>>> aad3e4cb58805342c73d3af46ba0eae1b80af292
 
 
 DATA_PATH = os.getenv("POLICY_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "policies.json")
@@ -210,14 +249,18 @@ def generate(req: GenerateRequest) -> Any:
     temperature = req.temperature if req.temperature is not None else default_temp
     max_tokens = req.max_tokens if req.max_tokens is not None else default_max_tokens
 
-    api_key = os.getenv("SARVAM_API_SUBSCRIPTION_KEY")
+    api_key = os.getenv("SARVAM_APIKEY") or os.getenv("SARVAM_API_SUBSCRIPTION_KEY")
     if not api_key:
+<<<<<<< HEAD
         return _fallback(
             reason="missing_sarvam_api_key",
             best_score=best_score,
             policy_top=policy_top,
             playbook_top=playbook_top,
         )
+=======
+        raise RuntimeError("Missing environment variable SARVAM_APIKEY")
+>>>>>>> aad3e4cb58805342c73d3af46ba0eae1b80af292
 
     llm = SarvamLLM(api_subscription_key=api_key)
     try:
