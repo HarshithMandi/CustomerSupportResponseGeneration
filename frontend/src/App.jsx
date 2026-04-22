@@ -1,11 +1,22 @@
 import React, { useMemo, useState } from 'react'
 import { generateResponse } from './api.js'
 
+/**
+ * Main UI for generating a customer support reply.
+ *
+ * Responsibilities:
+ * - Collect complaint text + generation settings
+ * - Call backend `/generate`
+ * - Render the final answer and retrieved context docs
+ */
+
+// ---------------------------- Defaults / constants ----------------------------
 const MODE_DEFAULTS = {
   strict: { temperature: 0.2, max_tokens: 150 },
   friendly: { temperature: 0.7, max_tokens: 200 }
 }
 
+// ---------------------------- Small helpers ----------------------------
 function clamp(n, min, max) {
   if (Number.isNaN(n)) return min
   return Math.min(max, Math.max(min, n))
@@ -32,6 +43,7 @@ function sanitizeAnswer(text) {
 }
 
 export default function App() {
+  // ---------------------------- Form state ----------------------------
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState('strict')
 
@@ -43,6 +55,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
 
+  // ---------------------------- Event handlers ----------------------------
   function handleModeChange(nextMode) {
     setMode(nextMode)
     const d = MODE_DEFAULTS[nextMode] || MODE_DEFAULTS.strict
@@ -82,7 +95,6 @@ export default function App() {
 
   return (
     <div className="page">
-      <div className="chrome" />
       <main className="shell">
         <header className="header">
           <div>

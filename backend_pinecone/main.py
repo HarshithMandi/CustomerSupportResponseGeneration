@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""FastAPI entrypoint for the Pinecone-backed RAG backend.
+
+High-level flow:
+- Load config from repo-root `.env` (local dev convenience)
+- Build two Pinecone namespaces (policies + playbook dataset)
+- Expose `/health` and `/generate` for the frontend
+
+This module supports running as either:
+- `uvicorn backend_pinecone.main:app` (package import)
+- `uvicorn main:app` from inside the folder (fallback imports)
+"""
+
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +35,7 @@ except ImportError:
     from sarvam_client import SarvamLLM, strip_think_tags
 
 
+# ---------------------------- Environment / config ----------------------------
 # Load environment variables from the repo root .env (useful for local dev).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DOTENV_PATH = _REPO_ROOT / ".env"
@@ -46,6 +59,7 @@ EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME") or "all-MiniLM-L6-v2"
 # Similarity threshold for fallback.
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE") or os.getenv("BM25_MIN_SCORE") or "0.25")
 
+# App logging (JSON lines in backend_pinecone/logs/app.log).
 logger = setup_logger(Path(__file__).with_name("logs"))
 
 xlsx_file: str | None = None
@@ -57,6 +71,7 @@ def _missing_pinecone_config() -> bool:
     return not (PINECONE_API_KEY and PINECONE_INDEX_NAME)
 
 
+# ---------------------------- Vector indices (Pinecone) ----------------------------
 # Build separate retrievers so we can reliably include *policies* as well as the XLSX dataset.
 policy_index: PineconePolicyIndex | None = None
 playbook_index: PineconePolicyIndex | None = None
@@ -180,6 +195,7 @@ def generate(req: GenerateRequest) -> Any:
         )
 
     if _missing_pinecone_config() or policy_index is None or playbook_index is None:
+        # Keep the frontend stable even if Pinecone isn't configured.
         return _fallback(reason="missing_pinecone_config", best_score=0.0, policy_top=0.0, playbook_top=0.0)
 
     try:
@@ -197,6 +213,7 @@ def generate(req: GenerateRequest) -> Any:
     playbook_top = playbook_docs[0].score if playbook_docs else 0.0
     best_score = max(policy_top, playbook_top)
 
+    # If both namespaces miss (or score is too low), return a deterministic fallback.
     if (not policy_docs and not playbook_docs) or best_score < RAG_MIN_SCORE:
         return _fallback(
             reason="no_relevant_docs",
@@ -205,8 +222,11 @@ def generate(req: GenerateRequest) -> Any:
             playbook_top=playbook_top,
         )
 
+    # Minimize LLM tokens: select up to 3 docs total and compact/truncate content.
     selected: list[tuple[str, Any]] = []
 
+    # Selection strategy: always include top-1 from each source (if present),
+    # then fill the remaining slot with the strongest “relative” candidate.
     if policy_docs and playbook_docs:
         selected.append(("POLICY", policy_docs[0]))
         selected.append(("DATASET", playbook_docs[0]))
@@ -247,6 +267,7 @@ def generate(req: GenerateRequest) -> Any:
     formatted_docs: list[RetrievedDocOut] = []
     context_parts: list[str] = []
     for i, (src, d) in enumerate(selected, start=1):
+        # Cap dataset entries a bit tighter (often longer/less policy-dense).
         max_chars = 520 if src == "DATASET" else 650
         content_used = _truncate(d.content, max_chars=max_chars)
         title_used = _compact(d.title)

@@ -1,18 +1,28 @@
+/*
+  UI styles for the AI-CSRG frontend.
+
+  Notes:
+  - Background animation is intentionally removed for performance.
+  - The palette is light to keep the UI responsive and readable.
+*/
+
+/* ---------------------------- Theme variables ---------------------------- */
 :root {
   /* Light, modern metallic-blue palette */
-  --bg0: #f4f9ff;
-  --bg1: #e7f1ff;
-  --panel: rgba(255, 255, 255, 0.74);
-  --panel2: rgba(242, 248, 255, 0.72);
+  --bg0: #fbfdff;
+  --bg1: #f1f7ff;
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel2: rgba(255, 255, 255, 0.90);
   --line: rgba(20, 90, 160, 0.16);
   --text: rgba(12, 23, 45, 0.92);
   --muted: rgba(26, 63, 110, 0.68);
   --blue: #1f7aff;
   --blue2: #0b63ff;
   --steel: rgba(11, 99, 255, 0.08);
-  --shadow: 0 18px 50px rgba(11, 45, 90, 0.12);
+  --shadow: 0 12px 28px rgba(11, 45, 90, 0.10);
 }
 
+/* ---------------------------- Base layout ---------------------------- */
 * { box-sizing: border-box; }
 
 html, body {
@@ -21,8 +31,8 @@ html, body {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif;
   color: var(--text);
   background:
-    radial-gradient(1000px 700px at 18% 8%, rgba(31, 122, 255, 0.18), transparent 58%),
-    radial-gradient(900px 650px at 82% 18%, rgba(0, 180, 255, 0.14), transparent 60%),
+    radial-gradient(1000px 700px at 18% 8%, rgba(31, 122, 255, 0.12), transparent 58%),
+    radial-gradient(900px 650px at 82% 18%, rgba(0, 180, 255, 0.10), transparent 60%),
     linear-gradient(180deg, var(--bg0), var(--bg1));
 }
 
@@ -32,31 +42,7 @@ html, body {
   padding: 32px 18px 46px;
 }
 
-/* A subtle moving metallic highlight */
-.chrome {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(115deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.12) 12%,
-    transparent 22%,
-    rgba(255, 255, 255, 0.10) 34%,
-    transparent 45%,
-    rgba(11, 99, 255, 0.08) 58%,
-    transparent 70%,
-    rgba(255, 255, 255, 0.10) 84%,
-    transparent 100%
-  );
-  mix-blend-mode: soft-light;
-  opacity: 0.45;
-  animation: sweep 10s linear infinite;
-}
-
-@keyframes sweep {
-  0% { transform: translateX(-22%); }
-  100% { transform: translateX(22%); }
-}
+/* Background animation removed for performance */
 
 .shell {
   position: relative;
@@ -77,7 +63,7 @@ html, body {
   font-size: 28px;
   font-weight: 850;
   letter-spacing: 0.2px;
-  text-shadow: 0 1px 14px rgba(31, 122, 255, 0.16);
+  text-shadow: none;
 }
 
 .subtitle {
@@ -101,8 +87,8 @@ html, body {
   border: 1px solid var(--line);
   border-radius: 16px;
   box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   padding: 18px;
 }
 
@@ -122,13 +108,11 @@ html, body {
   width: 100%;
   border-radius: 12px;
   border: 1px solid rgba(20, 90, 160, 0.18);
-  background: rgba(255, 255, 255, 0.70);
+  background: rgba(255, 255, 255, 0.90);
   color: var(--text);
   padding: 12px 12px;
   outline: none;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.70),
-    0 10px 25px rgba(11, 45, 90, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.70);
 }
 
 .textarea {
@@ -166,9 +150,7 @@ html, body {
   border-radius: 12px;
   font-weight: 800;
   cursor: pointer;
-  box-shadow:
-    0 14px 32px rgba(11, 45, 90, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: 0 10px 22px rgba(11, 45, 90, 0.14);
   transition: transform 0.08s ease, border-color 0.12s ease, filter 0.12s ease;
 }
 
@@ -185,10 +167,10 @@ html, body {
 }
 
 .button.ghost {
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.90);
   color: rgba(12, 45, 90, 0.88);
   border-color: rgba(20, 90, 160, 0.16);
-  box-shadow: 0 14px 32px rgba(11, 45, 90, 0.08);
+  box-shadow: 0 10px 22px rgba(11, 45, 90, 0.08);
 }
 
 .error {
@@ -219,7 +201,7 @@ html, body {
 
 .output {
   border: 1px solid rgba(20, 90, 160, 0.14);
-  background: rgba(255, 255, 255, 0.60);
+  background: rgba(255, 255, 255, 0.92);
   border-radius: 12px;
   padding: 12px;
   min-height: 140px;
@@ -248,7 +230,7 @@ html, body {
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid rgba(20, 90, 160, 0.14);
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.92);
   color: rgba(12, 23, 45, 0.74);
 }
 
@@ -264,9 +246,16 @@ html, body {
 
 .doc {
   border: 1px solid rgba(20, 90, 160, 0.14);
-  background: rgba(255, 255, 255, 0.60);
+  background: rgba(255, 255, 255, 0.92);
   border-radius: 12px;
   overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 .docSummary {

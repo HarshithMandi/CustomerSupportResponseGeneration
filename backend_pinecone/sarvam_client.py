@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""SarvamAI client wrapper (official `sarvamai` SDK).
+
+Responsibilities:
+- Call Sarvam chat completions using the official SDK surface
+- Extract text from multiple possible response shapes
+- Strip any `<think>` / reasoning text before returning to the frontend
+"""
+
 import inspect
 import os
 import re
@@ -7,17 +15,20 @@ from typing import Any, Optional
 
 from sarvamai import SarvamAI
 
-
+# ---------------------------- Output sanitization ----------------------------
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 _ANSWER_MARKER_RE = re.compile(r"(?im)^\s*(final\s*answer|answer|response)\s*:\s*")
 
 
 class SarvamLLM:
+    """Small wrapper around SarvamAI chat completions."""
+
     def __init__(self, api_subscription_key: str, model: Optional[str] = None):
         self._client = SarvamAI(api_subscription_key=api_subscription_key)
         self._model = model or os.getenv("SARVAM_MODEL") or "sarvam-m"
 
     def generate(self, prompt: str, temperature: float, max_tokens: int) -> str:
+        """Generate a response from Sarvam using the official SDK."""
         messages = [
             {
                 "role": "system",
@@ -60,6 +71,7 @@ class SarvamLLM:
 
 
 def strip_think_tags(text: str) -> str:
+    """Remove model 'thinking' content and return only the final answer text."""
     if not isinstance(text, str):
         return str(text).strip()
 
@@ -75,6 +87,7 @@ def strip_think_tags(text: str) -> str:
 
 
 def _extract_text(resp: Any) -> str:
+    """Extract assistant text from various response shapes."""
     choices = getattr(resp, "choices", None)
     if choices and len(choices) > 0:
         choice0 = choices[0]

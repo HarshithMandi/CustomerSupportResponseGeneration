@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+"""Lightweight JSON-lines logging helpers (Pinecone backend).
+
+This is duplicated from the Chroma backend so each backend can run standalone.
+"""
+
 import json
 import logging
 from datetime import datetime, timezone
@@ -8,6 +13,7 @@ from typing import Any, Mapping
 
 
 def setup_logger(log_dir: str | Path) -> logging.Logger:
+    """Create (or return) an app logger that writes JSON lines to `app.log`."""
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("aicsrg")
     logger.setLevel(logging.INFO)
@@ -22,6 +28,7 @@ def setup_logger(log_dir: str | Path) -> logging.Logger:
 
 
 def log_event(logger: logging.Logger, event: str, payload: Mapping[str, Any]) -> None:
+    """Log a structured event as a single JSON object line."""
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,

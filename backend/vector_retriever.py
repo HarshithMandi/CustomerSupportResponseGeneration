@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+"""ChromaDB-backed embeddings retriever and data loaders.
+
+This module owns:
+- Chunking (recursive splitter with overlap)
+- Loading policy docs from JSON and playbook entries from XLSX
+- Creating/upserting/searching a persistent ChromaDB collection
+
+It is intentionally self-contained so `backend/main.py` can import a single retriever.
+"""
+
 import hashlib
 import json
 import re
@@ -9,6 +19,8 @@ from typing import Iterable, Optional
 
 import openpyxl
 
+
+# ---------------------------- Small helpers ----------------------------
 
 def _norm_header(value: object) -> str:
     s = str(value or "").strip().lower()
@@ -25,32 +37,131 @@ def _stable_id(*parts: str) -> str:
     return h.hexdigest()
 
 
+
+# ---------------------------- Chunking ----------------------------
 def chunk_text(text: str, *, max_chars: int = 900, overlap: int = 160) -> list[str]:
-    t = " ".join((text or "").split()).strip()
+    """Split text into overlapping chunks using recursive, structure-aware splitting.
+
+    Strategy: try to split on larger boundaries first (paragraphs/newlines), then
+    sentences, then phrases, then whitespace; fall back to fixed-size char chunks.
+    """
+
+    raw = (text or "")
+    # Preserve newlines for better boundaries; normalize whitespace a bit.
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+    raw = re.sub(r"[\t\f\v]+", " ", raw)
+    raw = re.sub(r" +", " ", raw)
+    t = raw.strip()
     if not t:
         return []
     if len(t) <= max_chars:
         return [t]
 
-    chunks: list[str] = []
-    start = 0
-    step = max(1, max_chars - max(0, overlap))
-    while start < len(t):
-        end = min(len(t), start + max_chars)
-        chunk = t[start:end]
-        # Prefer cutting on a space for readability.
-        if end < len(t) and " " in chunk:
-            chunk = chunk.rsplit(" ", 1)[0]
-            end = start + len(chunk)
-        chunk = chunk.strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(t):
-            break
-        start = max(0, end - overlap)
-    return chunks
+    # Ordered from “coarsest” boundary to “finest”.
+    # `joiner` is used when we merge small pieces back into max-sized chunks.
+    separators: list[tuple[str, str]] = [
+        (r"\n{2,}", "\n\n"),
+        (r"\n", "\n"),
+        (r"(?<=[.!?])\s+", " "),
+        (r";\s+", "; "),
+        (r",\s+", ", "),
+        (r"\s+", " "),
+    ]
+
+    def _char_chunks(s: str) -> list[str]:
+        # Last-resort fallback when no separators produce multiple parts.
+        out: list[str] = []
+        start = 0
+        while start < len(s):
+            end = min(len(s), start + max_chars)
+            chunk = s[start:end]
+            if end < len(s) and " " in chunk:
+                chunk = chunk.rsplit(" ", 1)[0]
+                end = start + len(chunk)
+            chunk = chunk.strip()
+            if chunk:
+                out.append(chunk)
+            if end >= len(s):
+                break
+            start = max(0, end - max(0, overlap))
+        return out
+
+    def _merge(parts: list[str], joiner: str) -> list[str]:
+        # Greedily pack parts into chunks up to `max_chars`.
+        merged: list[str] = []
+        buf: list[str] = []
+        buf_len = 0
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            cand_len = len(p) if not buf else buf_len + len(joiner) + len(p)
+            if cand_len <= max_chars:
+                if buf:
+                    buf_len += len(joiner) + len(p)
+                else:
+                    buf_len = len(p)
+                buf.append(p)
+                continue
+
+            if buf:
+                merged.append(joiner.join(buf).strip())
+            buf = [p]
+            buf_len = len(p)
+
+        if buf:
+            merged.append(joiner.join(buf).strip())
+        return [m for m in merged if m]
+
+    def _split_recursive(s: str, seps: list[tuple[str, str]]) -> list[str]:
+        # Split by the first separator that yields >1 part, then recursively
+        # re-split any overlong parts using the remaining “finer” separators.
+        s = s.strip()
+        if not s:
+            return []
+        if len(s) <= max_chars:
+            return [s]
+        if not seps:
+            return _char_chunks(s)
+
+        for idx, (pattern, joiner) in enumerate(seps):
+            parts = [p.strip() for p in re.split(pattern, s) if p and p.strip()]
+            if len(parts) <= 1:
+                continue
+
+            refined: list[str] = []
+            for p in parts:
+                if len(p) > max_chars:
+                    refined.extend(_split_recursive(p, seps[idx + 1 :]))
+                else:
+                    refined.append(p)
+
+            merged = _merge(refined, joiner)
+            if merged and len(merged) > 1:
+                return merged
+
+        return _char_chunks(s)
+
+    base_chunks = _split_recursive(t, separators)
+
+    if overlap <= 0 or len(base_chunks) <= 1:
+        return base_chunks
+
+    # Add overlap by prefixing each chunk with the tail of the previous chunk.
+    out: list[str] = [base_chunks[0]]
+    for i in range(1, len(base_chunks)):
+        prev = base_chunks[i - 1]
+        prefix = prev[-overlap:] if overlap < len(prev) else prev
+        # Avoid starting the prefix mid-word when possible.
+        if " " in prefix:
+            prefix = prefix.split(" ", 1)[-1]
+        combined = (prefix + " " + base_chunks[i]).strip() if prefix else base_chunks[i]
+        out.append(combined)
+
+    return out
 
 
+# ---------------------------- Data structures ----------------------------
 @dataclass(frozen=True)
 class SourceDoc:
     title: str
@@ -64,6 +175,8 @@ class RetrievedDoc:
     score: float
 
 
+
+# ---------------------------- ChromaDB index ----------------------------
 class ChromaPolicyIndex:
     """Embeddings-based retriever backed by a persistent ChromaDB collection."""
 
@@ -72,6 +185,7 @@ class ChromaPolicyIndex:
         *,
         collection_name: str,
         persist_dir: str | Path,
+        # Local embedding model used by Chroma's SentenceTransformer embedding function.
         embedding_model_name: str = "all-MiniLM-L6-v2",
         docs: Iterable[SourceDoc] = (),
         source_label: str,
@@ -208,6 +322,8 @@ class ChromaPolicyIndex:
         )
 
     def upsert(self, docs: Iterable[SourceDoc]) -> None:
+        # We upsert *chunks* rather than whole documents so retrieval can focus on
+        # the most relevant passage.
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict[str, object]] = []
@@ -222,6 +338,7 @@ class ChromaPolicyIndex:
             if not pieces:
                 continue
 
+            # Stable IDs keep re-indexing idempotent.
             base_id = _stable_id(self._source_label, title)
             for i, chunk in enumerate(pieces):
                 chunk_id = _stable_id(base_id, str(i), chunk)
@@ -245,6 +362,7 @@ class ChromaPolicyIndex:
         if not q:
             return []
 
+        # Chroma returns cosine *distance*; we convert to a similarity score.
         result = self._collection.query(
             query_texts=[q],
             n_results=top_k,

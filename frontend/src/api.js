@@ -1,3 +1,13 @@
+/**
+ * Frontend API helpers.
+ *
+ * Backend selection is controlled via Vite env vars:
+ * - VITE_API_BASE_URL: explicit override (highest priority)
+ * - VITE_BACKEND_TARGET: 'chroma' | 'pinecone'
+ * - VITE_CHROMA_API_BASE_URL / VITE_PINECONE_API_BASE_URL: default base URLs
+ */
+
+// ---------------------------- API base URL resolution ----------------------------
 const EXPLICIT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
 const BACKEND_TARGET = (import.meta.env.VITE_BACKEND_TARGET || 'chroma').toLowerCase()
@@ -8,6 +18,7 @@ const API_BASE_URL =
   EXPLICIT_API_BASE_URL || (BACKEND_TARGET === 'pinecone' ? PINECONE_API_BASE_URL : CHROMA_API_BASE_URL)
 
 export async function generateResponse({ query, mode, temperature, max_tokens }) {
+  /** Call the backend `/generate` endpoint. */
   const res = await fetch(`${API_BASE_URL}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

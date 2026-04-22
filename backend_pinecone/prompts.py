@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+"""Prompt builders for the customer-support response generator (Pinecone backend).
+
+This is duplicated from the Chroma backend so each backend can run standalone.
+"""
+
 
 def build_prompt(mode: str, docs: str, query: str) -> tuple[str, float, int, str]:
     """Return (prompt, temperature, max_tokens, prompt_name)."""
@@ -46,4 +51,5 @@ def build_prompt(mode: str, docs: str, query: str) -> tuple[str, float, int, str
 
 
 def fallback_response() -> str:
+    """Used when retrieval is weak or an upstream dependency is unavailable."""
     return "Please escalate this issue to a human support agent."

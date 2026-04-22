@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""SarvamAI client wrapper (official `sarvamai` SDK).
+
+Responsibilities:
+- Call Sarvam chat completions using the official SDK surface
+- Extract text from multiple possible response shapes
+- Strip any `<think>` / reasoning text before returning to the frontend
+"""
+
 import inspect
 import os
 import re
@@ -7,12 +15,14 @@ from typing import Any, Optional
 
 from sarvamai import SarvamAI
 
-
+# ---------------------------- Output sanitization ----------------------------
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 _ANSWER_MARKER_RE = re.compile(r"(?im)^\s*(final\s*answer|answer|response)\s*:\s*")
 
 
 class SarvamLLM:
+    """Small wrapper around SarvamAI chat completions."""
+
     def __init__(self, api_subscription_key: str, model: Optional[str] = None):
         self._client = SarvamAI(api_subscription_key=api_subscription_key)
         self._model = model or os.getenv("SARVAM_MODEL") or "sarvam-m"

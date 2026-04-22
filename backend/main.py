@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""FastAPI entrypoint for the ChromaDB-backed RAG backend.
+
+High-level flow:
+- Load config from repo-root `.env` (local dev convenience)
+- Build/load persistent Chroma collections for policies + playbook dataset
+- Expose `/health` and `/generate` for the frontend
+"""
+
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -16,13 +24,14 @@ from .sarvam_client import SarvamLLM, strip_think_tags
 from .vector_retriever import ChromaPolicyIndex
 
 
+# ---------------------------- Environment / config ----------------------------
 # Load environment variables from the repo root .env (useful for local dev).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DOTENV_PATH = _REPO_ROOT / ".env"
 if _DOTENV_PATH.exists():
     load_dotenv(_DOTENV_PATH)
 
-
+# Input data locations (JSON policies + optional XLSX playbook).
 DATA_PATH = os.getenv("POLICY_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "policies.json")
 XLSX_PATH = os.getenv("XLSX_DATA_PATH") or os.path.join(os.path.dirname(__file__), "data", "Complaint Dataset.xlsx")
 
@@ -32,12 +41,14 @@ RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE") or os.getenv("BM25_MIN_SCORE") 
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR") or os.path.join(os.path.dirname(__file__), "chroma_db")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME") or "all-MiniLM-L6-v2"
 
+# App logging (JSON lines in backend/logs/app.log).
 logger = setup_logger(os.path.join(os.path.dirname(__file__), "logs"))
 
 xlsx_file: str | None = None
 if Path(XLSX_PATH).exists():
     xlsx_file = XLSX_PATH
 
+# ---------------------------- Vector indices (ChromaDB) ----------------------------
 # Build separate indexes so we can reliably include *policies* as well as the XLSX dataset.
 policy_index = ChromaPolicyIndex.from_sources(
     collection_name="policy_docs",
@@ -57,6 +68,7 @@ playbook_index = ChromaPolicyIndex.from_sources(
     xlsx_path=xlsx_file,
 )
 
+# ---------------------------- FastAPI app + middleware ----------------------------
 app = FastAPI(title="AI-CSRG Backend", version="1.0")
 
 app.add_middleware(
@@ -141,6 +153,7 @@ def generate(req: GenerateRequest) -> Any:
     playbook_top = playbook_docs[0].score if playbook_docs else 0.0
     best_score = max(policy_top, playbook_top)
 
+    # If both indices miss (or score is too low), return a deterministic fallback.
     if (not policy_docs and not playbook_docs) or best_score < RAG_MIN_SCORE:
         return _fallback(
             reason="no_relevant_docs",
@@ -152,6 +165,8 @@ def generate(req: GenerateRequest) -> Any:
     # Minimize LLM tokens: select up to 3 docs total and compact/truncate content.
     selected: list[tuple[str, Any]] = []
 
+    # Selection strategy: always include top-1 from each source (if present),
+    # then fill the remaining slot with the strongest “relative” candidate.
     if policy_docs and playbook_docs:
         selected.append(("POLICY", policy_docs[0]))
         selected.append(("DATASET", playbook_docs[0]))
@@ -192,6 +207,7 @@ def generate(req: GenerateRequest) -> Any:
     formatted_docs: list[RetrievedDocOut] = []
     context_parts: list[str] = []
     for i, (src, d) in enumerate(selected, start=1):
+        # Cap dataset entries a bit tighter (often longer/less policy-dense).
         max_chars = 520 if src == "DATASET" else 650
         content_used = _truncate(d.content, max_chars=max_chars)
         title_used = _compact(d.title)
@@ -210,6 +226,7 @@ def generate(req: GenerateRequest) -> Any:
     temperature = req.temperature if req.temperature is not None else default_temp
     max_tokens = req.max_tokens if req.max_tokens is not None else default_max_tokens
 
+    # Sarvam key: support multiple env var names.
     api_key = (
         os.getenv("SARVAM_API_SUBSCRIPTION_KEY")
         or os.getenv("SARVAM_API_KEY")
